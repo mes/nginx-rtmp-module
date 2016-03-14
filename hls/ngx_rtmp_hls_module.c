@@ -1090,6 +1090,7 @@ ngx_rtmp_hls_restore_stream(ngx_rtmp_session_t *s)
     ngx_int_t                       discont;
     uint64_t                        mag, key_id, base;
     static u_char                   buffer[4096];
+    ngx_str_t                      *datetime;
 
     ctx = ngx_rtmp_get_module_ctx(s, ngx_rtmp_hls_module);
 
@@ -1111,6 +1112,9 @@ ngx_rtmp_hls_restore_stream(ngx_rtmp_session_t *s)
     duration = 0;
     discont = 0;
     key_id = 0;
+    datetime = (ngx_str_t *) ngx_pcalloc(s->connection->pool, sizeof(ngx_str_t));
+    datetime->data = NULL;
+    datetime->len = 0;
 
     for ( ;; ) {
 
@@ -1227,6 +1231,18 @@ ngx_rtmp_hls_restore_stream(ngx_rtmp_session_t *s)
                                "hls: discontinuity");
             }
 
+#define NGX_RTMP_PROGRAM_DATE_TIME        "#EXT-X-PROGRAM-DATE-TIME:"
+#define NGX_RTMP_PROGRAM_DATE_TIME_LEN    (sizeof(NGX_RTMP_PROGRAM_DATE_TIME) - 1)
+
+
+            if (ngx_memcmp(p, NGX_RTMP_PROGRAM_DATE_TIME, NGX_RTMP_PROGRAM_DATE_TIME_LEN) == 0) {
+
+                datetime->len = last - p - NGX_RTMP_PROGRAM_DATE_TIME_LEN;
+                datetime->data = (u_char *) ngx_pcalloc(s->connection->pool, datetime->len);
+                ngx_memcpy(datetime->data, (const char *) &p[NGX_RTMP_PROGRAM_DATE_TIME_LEN], datetime->len);
+
+            }
+
             /* find '.ts\r' */
 
             if (p + 4 <= last &&
@@ -1238,10 +1254,14 @@ ngx_rtmp_hls_restore_stream(ngx_rtmp_session_t *s)
 
                 f->duration = duration;
                 f->discont = discont;
+                f->datetime = datetime;
                 f->active = 1;
                 f->id = 0;
 
                 discont = 0;
+                datetime = (ngx_str_t *) ngx_pcalloc(s->connection->pool, sizeof(ngx_str_t));
+                datetime->data = NULL;
+                datetime->len = 0;
 
                 mag = 1;
                 for (pa = last - 4; pa >= p; pa--) {
