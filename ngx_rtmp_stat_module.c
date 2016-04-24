@@ -116,7 +116,11 @@ ngx_rtmp_stat_init_process(ngx_cycle_t *cycle)
      * so we can run posted events here
      */
 
-    ngx_event_process_posted(cycle, (ngx_queue_t*) &ngx_rtmp_init_queue);
+    #if (nginx_version >= 1007012)
+        ngx_event_process_posted(cycle, (ngx_queue_t*) &ngx_rtmp_init_queue);
+    #else
+        ngx_event_process_posted(cycle, &ngx_rtmp_init_queue);
+    #endif
 
     return NGX_OK;
 }
