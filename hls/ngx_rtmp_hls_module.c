@@ -26,6 +26,7 @@ static void * ngx_rtmp_hls_create_app_conf(ngx_conf_t *cf);
 static char * ngx_rtmp_hls_merge_app_conf(ngx_conf_t *cf,
        void *parent, void *child);
 static ngx_int_t ngx_rtmp_hls_flush_audio(ngx_rtmp_session_t *s);
+static ngx_int_t ngx_rtmp_hls_write_timestamp(ngx_rtmp_session_t *s, uint64_t ts);
 static ngx_int_t ngx_rtmp_hls_ensure_directory(ngx_rtmp_session_t *s,
        ngx_str_t *path);
 
@@ -72,6 +73,7 @@ typedef struct {
 
     ngx_uint_t                          audio_cc;
     ngx_uint_t                          video_cc;
+    ngx_uint_t                          metadata_cc;
     ngx_uint_t                          key_frags;
 
     uint64_t                            aframe_base;
@@ -81,6 +83,7 @@ typedef struct {
     uint64_t                            aframe_pts;
 
     ngx_rtmp_hls_variant_t             *var;
+    uint64_t                            last_timestamp_written;
 } ngx_rtmp_hls_ctx_t;
 
 
@@ -117,6 +120,7 @@ typedef struct {
     ngx_str_t                           key_path;
     ngx_str_t                           key_url;
     ngx_uint_t                          frags_per_key;
+    ngx_flag_t                          metadata_timestamp;
 } ngx_rtmp_hls_app_conf_t;
 
 
@@ -331,6 +335,12 @@ static ngx_command_t ngx_rtmp_hls_commands[] = {
       offsetof(ngx_rtmp_hls_app_conf_t, frags_per_key),
       NULL },
 
+    { ngx_string("hls_metadata_timestamp"),
+      NGX_RTMP_MAIN_CONF|NGX_RTMP_SRV_CONF|NGX_RTMP_APP_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_flag_slot,
+      NGX_RTMP_APP_CONF_OFFSET,
+      offsetof(ngx_rtmp_hls_app_conf_t, metadata_timestamp),
+      NULL },
     ngx_null_command
 };
 
@@ -365,6 +375,37 @@ ngx_module_t  ngx_rtmp_hls_module = {
     NGX_MODULE_V1_PADDING
 };
 
+static u_char id3_frame_header[] = {
+
+  // First bytes are ID3 tag + version (4) + minor version (0) + flags (all 0)
+  'I', 'D', '3', // ID3 tag
+  0x04, // version (4)
+  0x00, // minor version
+  0x00, // flags
+
+  // 4 bytes containing ID3 size
+  // Size: original size + 8 extra bytes + 1 padding in the end
+  0x00,
+  0x00,
+  0x00,
+  0xFF, // byte #9: set from code: chr(strlen($tagContent) + 12);
+
+  'T', 'P', 'E', '1',
+  // Content length: real length + padding + encoding ID
+  0x00,
+  0x00,
+  0x00,
+  0xFF, // byte #17: set from code: chr(strlen($tagContent) + 2);
+
+  // Two empty bytes + encoding of 3
+  0x00,
+  0x00,
+  0x03
+
+  // tagcontent
+  // 0x00
+
+};
 
 static ngx_rtmp_hls_frag_t *
 ngx_rtmp_hls_get_frag(ngx_rtmp_session_t *s, ngx_int_t n)
@@ -1756,6 +1797,104 @@ ngx_rtmp_hls_update_fragment(ngx_rtmp_session_t *s, uint64_t ts,
     {
         ngx_rtmp_hls_flush_audio(s);
     }
+
+    // This method is called when both video and audio frames are updated,
+    // so it's a good place to add metadata
+    ngx_rtmp_hls_write_timestamp(s, ts);
+}
+
+static ngx_int_t
+ngx_rtmp_hls_write_timestamp(ngx_rtmp_session_t *s, uint64_t ts)
+{
+    // Init code from ngx_rtmp_hls_flush_audio
+    ngx_rtmp_hls_ctx_t             *ctx;
+    ngx_rtmp_hls_app_conf_t        *hacf;
+    ngx_rtmp_mpegts_frame_t         frame;
+    ngx_int_t                       rc;
+    ngx_buf_t                      *b;
+
+    hacf = ngx_rtmp_get_module_app_conf(s, ngx_rtmp_hls_module);
+
+    // Don't write metadata by default
+    // Note: For simplicity, the header in ngx_rtmp_mpegts.c always includes the metadata stream
+    if (!hacf->metadata_timestamp) {
+      return NGX_OK;
+    }
+
+    ctx = ngx_rtmp_get_module_ctx(s, ngx_rtmp_hls_module);
+
+    if (ctx == NULL || !ctx->opened) {
+        return NGX_OK;
+    }
+
+    uint64_t current_timestamp = ngx_cached_time->sec * 1000 + ngx_cached_time->msec;
+    if (0 != ctx->last_timestamp_written && ctx->last_timestamp_written + 1000 > current_timestamp) {
+      // only write a timestamp every 1000 ms
+      return NGX_DECLINED;
+    }
+    ctx->last_timestamp_written = current_timestamp;
+
+    ngx_log_error(NGX_LOG_ERR, s->connection->log, 0,
+                   "hls: write timestamp pts=%uL", ts);
+
+    // Store timestamp as a string consisting of 10 digits plus 3 decimal digits ("ssssssssss.mmm")
+    // This is a bit ineffective but easy to debug and parse on all platforms
+    // Note: As we use only one byte to store the length, max length is 255 - 12 = 243 bytes
+    static ngx_uint_t content_size = 14;
+
+    // allocate a pool. nginx will free it for us.
+    ngx_uint_t id3_tag_size = sizeof(id3_frame_header) + content_size + 1 /* terminating 00 */; // max len: 128; or need to split across segments
+    b = ngx_pcalloc(s->connection->pool, sizeof(ngx_buf_t));
+    if (b == NULL) {
+      return NGX_ERROR;
+    }
+    b->memory = 1;
+
+    // allocate the actual buffer
+    // keep buffer positions like this, used as starting point by ngx_rtmp_mpegts_write_frame
+    b->start = b->pos = ngx_pcalloc(s->connection->pool, id3_tag_size);
+    if (b->start == NULL) {
+      return NGX_ERROR;
+    }
+    b->end = b->last = b->start + id3_tag_size;
+
+    // set sizes
+    id3_frame_header[9] = content_size + 12;
+    id3_frame_header[17] = content_size + 2;
+
+    // write header
+    ngx_memcpy(b->start, id3_frame_header, sizeof(id3_frame_header));
+
+    // write ID3 payload as "ssssssssss.mmm", plus trailing null
+    (void) ngx_sprintf(b->start + sizeof(id3_frame_header), "%10.3f", current_timestamp / 1000.0);
+
+    ngx_log_error(NGX_LOG_ERR, s->connection->log, 0,
+                   "hls: write timestamp pts=%uL data=%s", ts, b->start + sizeof(id3_frame_header));
+
+    // write the whole frame
+    ngx_memzero(&frame, sizeof(frame));
+
+    frame.dts = ts;
+    frame.pts = ts;
+    frame.cc = ctx->metadata_cc;
+    frame.pid = 0x102; /* stream id 2 */
+    frame.sid = 0xbd; /* https://developer.apple.com/library/ios/documentation/AudioVideo/Conceptual/HTTP_Live_Streaming_Metadata_Spec/2/2.html#//apple_ref/doc/uid/TP40010435-CH2-DontLinkElementID_7 */
+
+    rc = ngx_rtmp_mpegts_write_frame(&ctx->file, &frame, b);
+
+    if (rc != NGX_OK) {
+        ngx_log_error(NGX_LOG_ERR, s->connection->log, 0,
+                      "hls: write timestamp failed");
+    }
+
+    ctx->metadata_cc = frame.cc;
+
+    ngx_log_error(NGX_LOG_ERR, s->connection->log, 0,
+                   "new cc: %d", frame.cc);
+
+    b->pos = b->last = b->start;
+
+    return rc;
 }
 
 
@@ -2463,6 +2602,7 @@ ngx_rtmp_hls_create_app_conf(ngx_conf_t *cf)
     conf->granularity = NGX_CONF_UNSET;
     conf->keys = NGX_CONF_UNSET;
     conf->frags_per_key = NGX_CONF_UNSET_UINT;
+    conf->metadata_timestamp = NGX_CONF_UNSET;
 
     return conf;
 }
@@ -2503,6 +2643,7 @@ ngx_rtmp_hls_merge_app_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_str_value(conf->key_path, prev->key_path, "");
     ngx_conf_merge_str_value(conf->key_url, prev->key_url, "");
     ngx_conf_merge_uint_value(conf->frags_per_key, prev->frags_per_key, 0);
+    ngx_conf_merge_value(conf->metadata_timestamp, prev->metadata_timestamp, 0);
 
     if (conf->fraglen) {
         conf->winfrags = conf->playlen / conf->fraglen;
