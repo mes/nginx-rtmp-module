@@ -281,10 +281,10 @@ ngx_rtmp_mpegts_write_header(ngx_rtmp_mpegts_file_t *file, ngx_uint_t *audio_cod
     // copy as big endian
     ngx_rtmp_rmemcpy(ngx_rtmp_mpegts_header + 210 + 17 + 25, &checksum, 4);
 
-    ngx_log_error(NGX_LOG_ERR, file->log, ngx_errno,
+    ngx_log_debug2(NGX_LOG_DEBUG_CORE, file->log, 0,
                   "checksum start byte: %d; end: %d", ngx_rtmp_mpegts_header[188 + 5], ngx_rtmp_mpegts_header[210 + 17 + 25 - 1]);
 
-    ngx_log_error(NGX_LOG_ERR, file->log, ngx_errno,
+    ngx_log_debug4(NGX_LOG_DEBUG_CORE, file->log, 0,
                   "checksum out: %d %d %d %d", ngx_rtmp_mpegts_header[210 + 17 + 25], ngx_rtmp_mpegts_header[210 + 17 + 25 + 1], ngx_rtmp_mpegts_header[210 + 17 + 25 + 2], ngx_rtmp_mpegts_header[210 + 17 + 25 + 3]);
 
     return ngx_rtmp_mpegts_write_file(file, ngx_rtmp_mpegts_header,

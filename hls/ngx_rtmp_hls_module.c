@@ -1834,7 +1834,7 @@ ngx_rtmp_hls_write_timestamp(ngx_rtmp_session_t *s, uint64_t ts)
     }
     ctx->last_timestamp_written = current_timestamp;
 
-    ngx_log_error(NGX_LOG_ERR, s->connection->log, 0,
+    ngx_log_debug1(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
                    "hls: write timestamp pts=%uL", ts);
 
     // Store timestamp as a string consisting of 10 digits plus 3 decimal digits ("ssssssssss.mmm")
@@ -1868,7 +1868,7 @@ ngx_rtmp_hls_write_timestamp(ngx_rtmp_session_t *s, uint64_t ts)
     // write ID3 payload as "ssssssssss.mmm", plus trailing null
     (void) ngx_sprintf(b->start + sizeof(id3_frame_header), "%10.3f", current_timestamp / 1000.0);
 
-    ngx_log_error(NGX_LOG_ERR, s->connection->log, 0,
+    ngx_log_debug2(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
                    "hls: write timestamp pts=%uL data=%s", ts, b->start + sizeof(id3_frame_header));
 
     // write the whole frame
@@ -1889,7 +1889,7 @@ ngx_rtmp_hls_write_timestamp(ngx_rtmp_session_t *s, uint64_t ts)
 
     ctx->metadata_cc = frame.cc;
 
-    ngx_log_error(NGX_LOG_ERR, s->connection->log, 0,
+    ngx_log_debug1(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
                    "new cc: %d", frame.cc);
 
     b->pos = b->last = b->start;
