@@ -579,7 +579,9 @@ ngx_rtmp_bandwidth_detection_clientcheck(ngx_rtmp_session_t *s, ngx_rtmp_header_
     {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                        "bandwidth_detection: bwcheck - no packet readed!");
-        return NGX_ERROR;
+        // return NGX_ERROR;
+        // Handle anyway, logic of current ClientServerBandwidth.as
+        return ngx_rtmp_send_onclientbwcheck(s, 0, s->out_bytes, s->in_bytes, 0);
     }
 
     ngx_log_debug2(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
