@@ -1151,6 +1151,10 @@ ngx_rtmp_send_onclientbwcheck(ngx_rtmp_session_t *s, double inTrans,
           ngx_null_string,
           &v.trans, 0 },
 
+        { NGX_RTMP_AMF_NULL,
+          ngx_null_string,
+          NULL, 0 },
+
         { NGX_RTMP_AMF_OBJECT,
           ngx_null_string,
           out_inf, sizeof(out_inf) },
